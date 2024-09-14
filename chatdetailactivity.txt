@@ -1,0 +1,389 @@
+package com;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.PopupMenu;
+import androidx.appcompat.widget.Toolbar;
+import androidx.recyclerview.widget.LinearLayoutManager;
+
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.os.Bundle;
+import android.os.Handler;
+import android.text.Editable;
+import android.text.TextWatcher;
+import android.view.MenuItem;
+import android.view.View;
+import android.widget.ImageView;
+
+import com.Adepter.ChatAdapter;
+import com.Model.MessageModel;
+import com.example.chatapp.MainActivity;
+import com.example.chatapp.R;
+import com.example.chatapp.databinding.ActivityChatDetailBinding;
+import com.google.android.gms.tasks.OnSuccessListener;
+import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.database.ChildEventListener;
+import com.google.firebase.database.DataSnapshot;
+import com.google.firebase.database.DatabaseError;
+import com.google.firebase.database.DatabaseReference;
+import com.google.firebase.database.FirebaseDatabase;
+import com.google.firebase.database.ValueEventListener;
+import com.squareup.picasso.Picasso;
+
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Map;
+
+public class ChatDetailActivity extends AppCompatActivity {
+
+    ActivityChatDetailBinding binding;
+    FirebaseDatabase database;
+    FirebaseAuth auth;
+    String senderId;
+    String receiverId;
+
+    String senderRoom;
+    String receiverRoom;
+
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+//        super.onCreate(savedInstanceState);
+        binding = ActivityChatDetailBinding.inflate(getLayoutInflater());
+        setContentView(binding.getRoot());
+
+        if (getSupportActionBar() != null) {
+            getSupportActionBar().hide();
+        }
+
+        Toolbar toolbar = findViewById(R.id.toolbar2);
+        setSupportActionBar(toolbar);
+
+        database = FirebaseDatabase.getInstance();
+        auth = FirebaseAuth.getInstance();
+
+        senderId = auth.getUid();
+        receiverId = getIntent().getStringExtra("userId");
+        String profPic = getIntent().getStringExtra("profpic");
+        String username = getIntent().getStringExtra("username");
+
+        binding.nameuser.setText(username);
+        Picasso.get().load(profPic).placeholder(R.drawable.ic_launcher_background).into(binding.profusers);
+
+        binding.backbutton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                Intent intent = new Intent(ChatDetailActivity.this, MainActivity.class);
+                startActivity(intent);
+            }
+        });
+
+        binding.optionmenu.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                PopupMenu popupMenu = new PopupMenu(ChatDetailActivity.this, view);
+
+                popupMenu.getMenuInflater().inflate(R.menu.chatdetaimenuoption, popupMenu.getMenu());
+
+                popupMenu.setOnMenuItemClickListener(new PopupMenu.OnMenuItemClickListener() {
+                    @Override
+                    public boolean onMenuItemClick(MenuItem item) {
+                        int id = item.getItemId();
+                        if (id == R.id.clearchat) {
+                            ClearChat();
+                            return true;
+                        } else {
+                            return false;
+                        }
+                    }
+                });
+                popupMenu.show();
+            }
+        });
+
+        final ArrayList<MessageModel> messageModels = new ArrayList<>();
+        final ChatAdapter chatAdapter = new ChatAdapter(messageModels, this, receiverId);
+        binding.chatrecylerview.setAdapter(chatAdapter);
+
+        LinearLayoutManager linearLayoutManager = new LinearLayoutManager(this);
+        binding.chatrecylerview.setLayoutManager(linearLayoutManager);
+
+        // Set up Firebase listeners
+        setUpFirebaseListeners(messageModels, chatAdapter);
+
+        binding.sendmessage.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                String message = binding.etmessage.getText().toString();
+                if (!message.isEmpty()) {
+                    final MessageModel model = new MessageModel(senderId, message);
+                    model.setTimestemp(new Date().getTime());
+                    model.setStatusm("sent");
+
+                    binding.etmessage.setText("");
+
+                    senderRoom = senderId + receiverId;
+                    receiverRoom = receiverId + senderId;
+
+                    String messageKey = database.getReference().child("Chats").child(senderRoom).push().getKey();
+
+                    if (messageKey != null) {
+                        // Store the message with the generated key in sender's room
+                        DatabaseReference senderReference = database.getReference().child("Chats").child(senderRoom).child(messageKey);
+                        senderReference.setValue(model).addOnSuccessListener(new OnSuccessListener<Void>() {
+                            @Override
+                            public void onSuccess(Void unused) {
+                                // Store the same message with the same key in receiver's room
+                                DatabaseReference receiverReference = database.getReference().child("Chats").child(receiverRoom).child(messageKey);
+                                receiverReference.setValue(model).addOnSuccessListener(new OnSuccessListener<Void>() {
+                                    @Override
+                                    public void onSuccess(Void unused) {
+
+                                        senderReference.child("Statusm").setValue("deliverd");
+
+
+                                    }
+                                });
+                            }
+                        });
+                    }
+                }
+            }
+
+
+        });
+
+        updatetextstatus();
+
+
+    }
+
+
+    private void updatetextstatus() {
+        binding.etmessage.addTextChangedListener(new TextWatcher() {
+            private Handler handler = new Handler();
+            private Runnable userStoppedTyping = new Runnable() {
+                @Override
+                public void run() {
+                    // Set the TextView to "Online"
+                    binding.statususer.setText("Online");
+                    // Update the database status for the current user to "online"
+                    database.getReference().child("Users").child(senderId).child("Status").setValue("online");
+                }
+            };
+
+            @Override
+            public void beforeTextChanged(CharSequence charSequence, int i, int i1, int i2) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence charSequence, int i, int i1, int i2) {
+                // Set status to "typing" when the user is typing
+                database.getReference().child("Users").child(senderId).child("Status").setValue("typing");
+
+                // Retrieve and display the receiver's status
+                database.getReference().child("Users").child(receiverId).child("Status")
+                        .addListenerForSingleValueEvent(new ValueEventListener() {
+                            @Override
+                            public void onDataChange(@NonNull DataSnapshot snapshot) {
+                                String status = snapshot.getValue(String.class);
+                                if (status != null) {
+                                    if (status.equals("typing")) {
+                                        binding.statususer.setText("Typing...");
+                                    } else if (status.equals("online")) {
+                                        binding.statususer.setText("Online");
+                                    } else {
+                                        long lastSeenTime = Long.parseLong(status);
+                                        SimpleDateFormat sdf = new SimpleDateFormat("dd MMM yyyy hh:mm a");
+                                        String lastSeen = sdf.format(new Date(lastSeenTime));
+                                        binding.statususer.setText("Last seen: " + lastSeen);
+                                    }
+                                }
+                            }
+
+                            @Override
+                            public void onCancelled(@NonNull DatabaseError error) {
+                            }
+                        });
+
+                // Remove any previous callbacks for userStoppedTyping
+                handler.removeCallbacks(userStoppedTyping);
+            }
+
+            @Override
+            public void afterTextChanged(Editable editable) {
+                // Set a delay of 2 seconds before switching to "online" status
+                handler.postDelayed(userStoppedTyping, 2000);
+            }
+        });
+
+        // Display receiver's status or last seen
+        database.getReference().child("Users").child(receiverId).child("Status")
+                .addValueEventListener(new ValueEventListener() {
+                    @Override
+                    public void onDataChange(@NonNull DataSnapshot snapshot) {
+                        String status = snapshot.getValue(String.class);
+                        if (status != null) {
+                            if (status.equals("typing")) {
+                                binding.statususer.setText("Typing...");
+                            } else if (status.equals("online")) {
+                                binding.statususer.setText("Online");
+                            } else {
+                                long lastSeenTime = Long.parseLong(status);
+                                SimpleDateFormat sdf = new SimpleDateFormat("dd MMM yyyy hh:mm a");
+                                String lastSeen = sdf.format(new Date(lastSeenTime));
+                                binding.statususer.setText("Last seen: " + lastSeen);
+                            }
+                        }
+                    }
+
+                    @Override
+                    public void onCancelled(@NonNull DatabaseError error) {
+                    }
+                });
+    }
+
+
+    private void ClearChat() {
+
+        senderRoom = senderId + receiverId;
+
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("Cler chat").setMessage("Are you sure you want to clear this chat?").setPositiveButton("yes", new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialogInterface, int i) {
+
+                database.getReference().child("Chats").child(senderRoom).removeValue();
+
+
+            }
+        }).setNegativeButton("No", new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialogInterface, int i) {
+                dialogInterface.dismiss();
+            }
+        }).show();
+
+
+    }
+
+
+    private void setUpFirebaseListeners(final ArrayList<MessageModel> messageModels, final ChatAdapter chatAdapter) {
+        senderRoom = senderId + receiverId;
+        receiverRoom = receiverId + senderId;
+
+        database.getReference().child("Chats").child(senderRoom).addChildEventListener(new ChildEventListener() {
+            @Override
+            public void onChildAdded(@NonNull DataSnapshot snapshot, @Nullable String previousChildName) {
+                MessageModel model = snapshot.getValue(MessageModel.class);
+
+                if (model == null) {
+                    return;
+                }
+
+                model.setMessageId(snapshot.getKey());
+
+                // Ensure that the message fields are not null before using them
+                if (model.getMessage() == null) {
+                    model.setMessage("No message content");
+                }
+                if (model.getSenderid() == null) {
+                    model.setSenderid("");
+                }
+                if (model.getStatus() == null) {
+                    model.setStatus("sent");
+                }
+
+                if (model.isdeleted()) {
+                    model.setMessage("This message was deleted");
+                }
+
+                // Check if the message status is delivered, and update to read if not already read
+                if (!model.getSenderid().equals(senderId) && "delivered".equals(model.getStatus())) {
+                    model.setStatus("read");
+                    snapshot.getRef().setValue(model);
+
+                    DatabaseReference senderReference = database.getReference().child("Chats").child(senderRoom).child(model.getMessageId());
+                    senderReference.setValue(model);
+                }
+
+                messageModels.add(model);
+                chatAdapter.notifyDataSetChanged();
+                binding.chatrecylerview.scrollToPosition(messageModels.size() - 1); // Scroll to the latest message
+            }
+
+            @Override
+            public void onChildChanged(@NonNull DataSnapshot snapshot, @Nullable String previousChildName) {
+                MessageModel model = snapshot.getValue(MessageModel.class);
+
+                if (model == null) {
+                    return;
+                }
+
+                model.setMessageId(snapshot.getKey());
+
+                for (int i = 0; i < messageModels.size(); i++) {
+                    if (messageModels.get(i).getMessageId() != null && messageModels.get(i).getMessageId().equals(model.getMessageId())) {
+                        messageModels.set(i, model);
+                        break;
+                    }
+                }
+                chatAdapter.notifyDataSetChanged();
+            }
+
+            @Override
+            public void onChildRemoved(@NonNull DataSnapshot snapshot) {
+                MessageModel model = snapshot.getValue(MessageModel.class);
+
+                if (model == null) {
+                    return;
+                }
+
+                model.setMessageId(snapshot.getKey());
+
+                messageModels.remove(model);
+                chatAdapter.notifyDataSetChanged();
+            }
+
+            @Override
+            public void onChildMoved(@NonNull DataSnapshot snapshot, @Nullable String previousChildName) {
+            }
+
+            @Override
+            public void onCancelled(@NonNull DatabaseError error) {
+            }
+        });
+    }
+
+
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Set the user's status to "Online" when the app is in the foreground
+        database.getReference().child("Users").child(senderId).child("Status").setValue("online");
+    }
+
+    //
+    @Override
+    protected void onPause() {
+        super.onPause();
+        // Set the user's last seen timestamp in the database when the app is in the background
+        database.getReference().child("Users").child(senderId).child("Status")
+                .setValue(String.valueOf(new Date().getTime()));
+
+
+    }
+
+}
+
+
+
+
+
